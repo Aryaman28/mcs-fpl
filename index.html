@@ -171,6 +171,10 @@
     .wins-n{font-size:13px;font-weight:800;min-width:20px;text-align:right;flex-shrink:0;color:var(--green)}
     .wins-n--zero{color:rgba(255,255,255,.25)}
 
+    /* Standings chart */
+    .chart-axis{font-size:9px;font-weight:700;fill:rgba(255,255,255,0.35);font-family:'Nunito',-apple-system,sans-serif}
+    .chart-label{font-size:9px;font-weight:800;font-family:'Nunito',-apple-system,sans-serif}
+
     /* Footer */
     .footer{padding:24px 20px 0;text-align:center;font-size:11px;color:rgba(255,255,255,.20);line-height:2}
     .footer-row{display:flex;align-items:center;justify-content:center;gap:12px}
@@ -615,6 +619,95 @@ function renderHistoryTable(managers, allHistory) {
   </div>`;
 }
 
+function renderStandingsChart(managers, allHistory) {
+  const n = managers.length;
+  // Build GW → managerIndex → total_points from history
+  const gwTotals = {};
+  managers.forEach((_, i) => {
+    (allHistory[i]?.current || []).forEach(g => {
+      if (!gwTotals[g.event]) gwTotals[g.event] = {};
+      gwTotals[g.event][i] = g.total_points;
+    });
+  });
+  const gws = Object.keys(gwTotals).map(Number).sort((a, b) => a - b);
+  if (!gws.length) return '';
+
+  // Compute league position per GW by ranking total_points
+  const ranksByGW = {};
+  gws.forEach(gw => {
+    const entries = managers.map((_, i) => ({ i, pts: gwTotals[gw][i] ?? -1 }));
+    entries.sort((a, b) => b.pts - a.pts);
+    ranksByGW[gw] = {};
+    entries.forEach((e, pos) => { ranksByGW[gw][e.i] = pos + 1; });
+  });
+
+  const COLORS = ['#00ff85','#ff6b6b','#4ecdc4','#ffd700','#a855f7','#f97316','#06b6d4','#84cc16','#ec4899','#60a5fa'];
+  const PAD_L = 28, PAD_R = 68, PAD_T = 16, PAD_B = 28;
+  const H = 220;
+  const pointSpacing = Math.max(28, Math.min(52, Math.floor((360 - PAD_L - PAD_R) / Math.max(gws.length - 1, 1))));
+  const W = PAD_L + PAD_R + pointSpacing * Math.max(gws.length - 1, 1);
+
+  const xOf = idx => PAD_L + idx * pointSpacing;
+  const yOf = rank => PAD_T + (rank - 1) / Math.max(n - 1, 1) * (H - PAD_T - PAD_B);
+
+  // Gridlines
+  let grid = '';
+  for (let r = 1; r <= n; r++) {
+    grid += `<line x1="${PAD_L}" x2="${W - PAD_R}" y1="${yOf(r)}" y2="${yOf(r)}" stroke="rgba(255,255,255,0.07)" stroke-width="1"/>`;
+  }
+
+  // Y-axis labels
+  let yLabels = '';
+  for (let r = 1; r <= n; r++) {
+    yLabels += `<text x="${PAD_L - 6}" y="${yOf(r) + 4}" text-anchor="end" class="chart-axis">${r}</text>`;
+  }
+
+  // X-axis labels (skip some if many GWs)
+  const step = gws.length > 12 ? 3 : gws.length > 6 ? 2 : 1;
+  let xLabels = '';
+  gws.forEach((gw, idx) => {
+    if (idx % step === 0 || idx === gws.length - 1) {
+      xLabels += `<text x="${xOf(idx)}" y="${H - PAD_B + 14}" text-anchor="middle" class="chart-axis">${gw}</text>`;
+    }
+  });
+
+  // Lines, dots, and end labels per manager
+  let paths = '';
+  managers.forEach((mgr, i) => {
+    const color = COLORS[i % COLORS.length];
+    const validPts = gws.map((gw, idx) => {
+      const r = ranksByGW[gw]?.[i];
+      return r !== undefined ? { idx, r } : null;
+    }).filter(Boolean);
+    if (!validPts.length) return;
+    const pointsStr = validPts.map(({ idx, r }) => `${xOf(idx)},${yOf(r)}`).join(' ');
+    paths += `<polyline points="${pointsStr}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`;
+    validPts.forEach(({ idx, r }) => {
+      paths += `<circle cx="${xOf(idx)}" cy="${yOf(r)}" r="3" fill="${color}" stroke="rgba(20,0,30,0.6)" stroke-width="1.2"/>`;
+    });
+    const last = validPts[validPts.length - 1];
+    const firstName = esc(mgr.player_name.split(' ')[0].slice(0, 7));
+    paths += `<text x="${xOf(last.idx) + 8}" y="${yOf(last.r) + 4}" class="chart-label" fill="${color}">${firstName}</text>`;
+  });
+
+  // Axis label
+  const axisLabel = `<text x="10" y="${(H - PAD_T - PAD_B) / 2 + PAD_T}" text-anchor="middle" class="chart-axis" transform="rotate(-90,10,${(H - PAD_T - PAD_B) / 2 + PAD_T})">Pos</text>`;
+
+  return `
+  <div class="dcard" style="overflow:hidden">
+    <div class="dcard__head" style="padding-bottom:4px">League standings by GW</div>
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 0 8px">
+      <svg width="${W}" height="${H}" style="display:block">
+        ${axisLabel}
+        ${grid}
+        ${yLabels}
+        ${xLabels}
+        ${paths}
+      </svg>
+    </div>
+  </div>`;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────
 // jdfc_update.py replaces null below with live JSON data each gameweek.
 // When null the page falls back to fetching live via CORS proxies.
@@ -653,6 +746,7 @@ function renderAll({ currentGW, managers, allPicks, allHistory, liveMap, playerM
       ${renderMOTDHistory(motdHistory)}
       ${renderMOTDWins(motdWins)}
       ${renderHistoryTable(managers, allHistory)}
+      ${renderStandingsChart(managers, allHistory)}
     </div>
   `;
   document.getElementById('last-updated').textContent =
